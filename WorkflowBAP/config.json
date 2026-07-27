@@ -1,0 +1,15 @@
+﻿{
+  "SourceDirectory": "\\\\srv-ged\\workflow\\exportXML",
+  "WorkingDirectory": "C:\\Program Files (x86)\\WorkflowBAP\\A_TRAITER",
+  "ProcessedDirectory": "C:\\Program Files (x86)\\WorkflowBAP\\TRAITES",
+  "ErrorDirectory": "C:\\Program Files (x86)\\WorkflowBAP\\ERREURS",
+
+  "SageUser": "<Administrateur>",
+  "SagePassword": "",
+
+  "MinimumFileAgeSeconds": 60,
+
+  "CompanyMappings": {
+    "BIJOU": "F:\\_SOCIETES_COMPTA\\Boui IJOU.mae"
+  }
+}
