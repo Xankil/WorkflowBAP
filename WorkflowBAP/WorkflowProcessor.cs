@@ -210,10 +210,13 @@ namespace WorkflowBAP
                     OpenBeeXmlReader.Read(localFile);
 
                 Logger.Info(
-                    "XML lu : ID={0}, dossier={1}, facture={2}, BAP={3}",
+                    "XML lu : ID={0}, dossier={1}, facture={2}, "
+                    + "TTC={3:F2}, sens={4}, BAP={5}",
                     document.DocumentId,
                     document.Dossier,
                     document.NumeroFacture,
+                    document.TotalTtc,
+                    document.Sens,
                     document.BonAPayer);
 
                 string companyFile =
@@ -250,6 +253,8 @@ namespace WorkflowBAP
                     updateResult =
                         service.UpdateBonAPayer(
                             document.NumeroFacture,
+                            document.TotalTtc,
+                            document.Sens,
                             estBonAPayer,
                             document.RaisonRefus);
                 }
@@ -273,10 +278,13 @@ namespace WorkflowBAP
 
                 Logger.Info(
                     "Traitement réussi : fichier={0}, dossier={1}, facture={2}, "
-                    + "écritures trouvées={3}, écritures modifiées={4}, destination={5}",
+                    + "TTC={3:F2}, sens={4}, écritures trouvées={5}, "
+                    + "écritures modifiées={6}, destination={7}",
                     fileName,
                     document.Dossier,
                     document.NumeroFacture,
+                    document.TotalTtc,
+                    document.Sens,
                     updateResult.NombreEcrituresTrouvees,
                     updateResult.NombreEcrituresModifiees,
                     destinationFile);
@@ -332,6 +340,16 @@ namespace WorkflowBAP
                     + Environment.NewLine
                     + "Facture : "
                     + (document?.NumeroFacture ?? "inconnue")
+                    + Environment.NewLine
+                    + "Total TTC : "
+                    + (document == null
+                        ? "inconnu"
+                        : document.TotalTtc.ToString(
+                            "F2",
+                            System.Globalization.CultureInfo.GetCultureInfo("fr-FR")))
+                    + Environment.NewLine
+                    + "Sens : "
+                    + (document?.Sens ?? "inconnu")
                     + Environment.NewLine
                     + Environment.NewLine
                     + "Erreur :"

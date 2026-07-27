@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using Objets100cLib;
 
 namespace WorkflowBAP.Sage
@@ -9,8 +11,11 @@ namespace WorkflowBAP.Sage
         private const int IndexBonAPayer = 3;
         private const int IndexRaisonRefus = 4;
 
+        private const int LongueurNumeroFactureSage = 17;
         private const int LongueurBonAPayer = 3;
         private const int LongueurRaisonRefus = 69;
+
+        private const double ToleranceMontant = 0.01d;
 
         private static readonly NLog.Logger Logger =
             NLog.LogManager.GetCurrentClassLogger();
@@ -31,6 +36,8 @@ namespace WorkflowBAP.Sage
 
         public InvoiceUpdateResult UpdateBonAPayer(
             string numeroFacture,
+            decimal totalTtc,
+            string sens,
             bool estBonAPayer,
             string raisonRefus)
         {
@@ -41,7 +48,30 @@ namespace WorkflowBAP.Sage
                     nameof(numeroFacture));
             }
 
-            numeroFacture = numeroFacture.Trim();
+            if (totalTtc <= 0m)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(totalTtc),
+                    "Le montant TTC doit être strictement positif.");
+            }
+
+            bool estFacture = GetEstFacture(sens);
+
+            string numeroFactureOpenBee =
+                numeroFacture.Trim();
+
+            string numeroFactureSage = LimiterTexte(
+                numeroFactureOpenBee,
+                LongueurNumeroFactureSage);
+
+            double montantTtcRecherche =
+                Math.Abs(Convert.ToDouble(
+                    totalTtc,
+                    CultureInfo.InvariantCulture));
+
+            EcritureSensType sensSageRecherche = estFacture
+                ? EcritureSensType.EcritureSensTypeCredit
+                : EcritureSensType.EcritureSensTypeDebit;
 
             string valeurBonAPayer = LimiterTexte(
                 estBonAPayer ? "Oui" : "Non",
@@ -65,110 +95,259 @@ namespace WorkflowBAP.Sage
             var chronometreRecherche = Stopwatch.StartNew();
 
             Logger.Info(
-                "Recherche Sage ciblée : facture={0}",
-                numeroFacture);
+                "Recherche Sage ciblée : facture OpenBee={0}, "
+                + "référence Sage={1}, TTC={2:F2}, sens={3}",
+                numeroFactureOpenBee,
+                numeroFactureSage,
+                totalTtc,
+                estFacture ? "Facture" : "Avoir");
 
-            IBICollection ecritures =
-                RechercherEcrituresParReference(numeroFacture);
+            IBICollection collection =
+                RechercherEcrituresParReference(numeroFactureSage);
 
-            chronometreRecherche.Stop();
+            List<IBOEcriture3> ecritures =
+                new List<IBOEcriture3>();
 
-            Logger.Info(
-                "Recherche Sage terminée : facture={0}, " +
-                "écritures retournées={1}, durée={2} ms",
-                numeroFacture,
-                ecritures.Count,
-                chronometreRecherche.ElapsedMilliseconds);
-
-            int nombreEcrituresTrouvees = 0;
-            int nombreEcrituresModifiees = 0;
-
-            var chronometreModification = Stopwatch.StartNew();
-
-            foreach (IBOEcriture3 ecriture in ecritures)
+            foreach (IBOEcriture3 ecriture in collection)
             {
-                /*
-                 * Vérification défensive :
-                 * QueryPredicate doit déjà avoir filtré les écritures,
-                 * mais on vérifie tout de même la référence retournée.
-                 */
                 string referenceFacture =
                     ecriture.EC_RefPiece?.Trim() ?? string.Empty;
 
                 if (!referenceFacture.Equals(
-                        numeroFacture,
+                        numeroFactureSage,
                         StringComparison.OrdinalIgnoreCase))
                 {
                     Logger.Warn(
-                        "Écriture ignorée après filtrage Sage : " +
-                        "facture demandée={0}, référence trouvée={1}, EC_No={2}",
-                        numeroFacture,
+                        "Écriture ignorée après filtrage Sage : "
+                        + "référence demandée={0}, référence trouvée={1}, EC_No={2}",
+                        numeroFactureSage,
                         referenceFacture,
                         ecriture.EC_No);
 
                     continue;
                 }
 
-                nombreEcrituresTrouvees++;
+                ecritures.Add(ecriture);
+            }
 
-                string ancienBonAPayer =
-                    Convert.ToString(
-                        ecriture.InfoLibre[IndexBonAPayer])
-                    ?.Trim() ?? string.Empty;
+            chronometreRecherche.Stop();
 
-                string ancienneRaisonRefus =
-                    Convert.ToString(
-                        ecriture.InfoLibre[IndexRaisonRefus])
-                    ?.Trim() ?? string.Empty;
+            Logger.Info(
+                "Recherche Sage terminée : facture OpenBee={0}, "
+                + "référence Sage={1}, écritures retournées={2}, durée={3} ms",
+                numeroFactureOpenBee,
+                numeroFactureSage,
+                ecritures.Count,
+                chronometreRecherche.ElapsedMilliseconds);
 
-                bool modificationNecessaire =
-                    !string.Equals(
-                        ancienBonAPayer,
-                        valeurBonAPayer,
-                        StringComparison.OrdinalIgnoreCase)
-                    ||
-                    !string.Equals(
-                        ancienneRaisonRefus,
-                        valeurRaisonRefus,
-                        StringComparison.Ordinal);
+            if (ecritures.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "Aucune écriture Sage trouvée pour la référence "
+                    + numeroFactureSage
+                    + " issue de la facture OpenBee "
+                    + numeroFactureOpenBee
+                    + ".");
+            }
 
-                if (!modificationNecessaire)
-                {
-                    Logger.Debug(
-                        "Écriture déjà à jour : facture={0}, EC_No={1}",
-                        numeroFacture,
-                        ecriture.EC_No);
+            List<IBOEcriture3> lignesTiers =
+                new List<IBOEcriture3>();
 
+            List<string> diagnosticsLignesTiers =
+                new List<string>();
+
+            foreach (IBOEcriture3 ecriture in ecritures)
+            {
+                if (ecriture.Tiers == null)
                     continue;
-                }
 
-                ecriture.InfoLibre[IndexBonAPayer] =
-                    valeurBonAPayer;
+                double montantSage =
+                    Math.Abs(ecriture.EC_Montant);
 
-                ecriture.InfoLibre[IndexRaisonRefus] =
-                    valeurRaisonRefus;
+                bool montantCorrespond =
+                    Math.Abs(montantSage - montantTtcRecherche)
+                    <= ToleranceMontant;
 
-                ecriture.Write();
+                bool sensCorrespond =
+                    ecriture.EC_Sens == sensSageRecherche;
 
-                nombreEcrituresModifiees++;
+                string diagnostic = string.Format(
+                    CultureInfo.GetCultureInfo("fr-FR"),
+                    "EC_No={0}, journal={1}, date={2:dd/MM/yyyy}, "
+                    + "pièce={3}, montant={4:F2}, sens={5}, "
+                    + "montant OK={6}, sens OK={7}",
+                    ecriture.EC_No,
+                    GetJournalNumero(ecriture),
+                    ecriture.Date,
+                    ecriture.EC_Piece,
+                    montantSage,
+                    ecriture.EC_Sens,
+                    montantCorrespond,
+                    sensCorrespond);
+
+                diagnosticsLignesTiers.Add(diagnostic);
 
                 Logger.Debug(
-                    "Écriture mise à jour : facture={0}, EC_No={1}",
-                    numeroFacture,
-                    ecriture.EC_No);
+                    "Contrôle ligne tiers Sage : {0}",
+                    diagnostic);
+
+                if (montantCorrespond && sensCorrespond)
+                {
+                    lignesTiers.Add(ecriture);
+                }
+            }
+
+            if (lignesTiers.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "Aucune ligne tiers Sage ne correspond aux critères : "
+                    + "référence="
+                    + numeroFactureSage
+                    + ", TTC="
+                    + totalTtc.ToString(
+                        "F2",
+                        CultureInfo.GetCultureInfo("fr-FR"))
+                    + ", sens attendu="
+                    + (estFacture ? "crédit (Facture)" : "débit (Avoir)")
+                    + ". Lignes tiers contrôlées : "
+                    + (diagnosticsLignesTiers.Count == 0
+                        ? "aucune"
+                        : string.Join(" | ", diagnosticsLignesTiers)));
+            }
+
+            if (lignesTiers.Count > 1)
+            {
+                List<string> correspondances =
+                    new List<string>();
+
+                foreach (IBOEcriture3 ligneTiers in lignesTiers)
+                {
+                    correspondances.Add(
+                        GetPieceDescription(ligneTiers));
+                }
+
+                throw new InvalidOperationException(
+                    "Rapprochement Sage ambigu : "
+                    + lignesTiers.Count
+                    + " lignes tiers correspondent à la référence "
+                    + numeroFactureSage
+                    + ", au TTC "
+                    + totalTtc.ToString(
+                        "F2",
+                        CultureInfo.GetCultureInfo("fr-FR"))
+                    + " et au sens "
+                    + (estFacture ? "Facture" : "Avoir")
+                    + ". Mise à jour annulée. Correspondances : "
+                    + string.Join(" | ", correspondances));
+            }
+
+            IBOEcriture3 ligneTiersSelectionnee =
+                lignesTiers[0];
+
+            PieceComptableKey pieceSelectionnee =
+                PieceComptableKey.FromEcriture(
+                    ligneTiersSelectionnee);
+
+            List<IBOEcriture3> ecrituresPiece =
+                new List<IBOEcriture3>();
+
+            foreach (IBOEcriture3 ecriture in ecritures)
+            {
+                if (pieceSelectionnee.Matches(ecriture))
+                {
+                    ecrituresPiece.Add(ecriture);
+                }
+            }
+
+            if (ecrituresPiece.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "La pièce Sage sélectionnée ne contient aucune écriture. "
+                    + GetPieceDescription(ligneTiersSelectionnee));
+            }
+
+            Logger.Info(
+                "Pièce Sage sélectionnée : facture OpenBee={0}, "
+                + "référence Sage={1}, TTC XML={2:F2}, sens XML={3}, "
+                + "journal={4}, date={5:dd/MM/yyyy}, pièce={6}, "
+                + "montant tiers Sage={7:F2}, sens tiers Sage={8}, lignes={9}",
+                numeroFactureOpenBee,
+                numeroFactureSage,
+                totalTtc,
+                estFacture ? "Facture" : "Avoir",
+                pieceSelectionnee.JournalNumero,
+                pieceSelectionnee.Date,
+                pieceSelectionnee.NumeroPiece,
+                Math.Abs(ligneTiersSelectionnee.EC_Montant),
+                ligneTiersSelectionnee.EC_Sens,
+                ecrituresPiece.Count);
+
+            List<EcritureUpdate> misesAJour =
+                PreparerMisesAJour(
+                    ecrituresPiece,
+                    valeurBonAPayer,
+                    valeurRaisonRefus);
+
+            int nombreEcrituresModifiees = 0;
+            var chronometreModification = Stopwatch.StartNew();
+
+            try
+            {
+                foreach (EcritureUpdate miseAJour in misesAJour)
+                {
+                    if (!miseAJour.ModificationNecessaire)
+                    {
+                        Logger.Debug(
+                            "Écriture déjà à jour : pièce={0}, EC_No={1}",
+                            pieceSelectionnee.NumeroPiece,
+                            miseAJour.Ecriture.EC_No);
+
+                        continue;
+                    }
+
+                    miseAJour.Ecriture.InfoLibre[IndexBonAPayer] =
+                        valeurBonAPayer;
+
+                    miseAJour.Ecriture.InfoLibre[IndexRaisonRefus] =
+                        valeurRaisonRefus;
+
+                    miseAJour.Ecriture.Write();
+                    miseAJour.EcritureModifiee = true;
+                    nombreEcrituresModifiees++;
+
+                    Logger.Debug(
+                        "Écriture mise à jour : pièce={0}, EC_No={1}",
+                        pieceSelectionnee.NumeroPiece,
+                        miseAJour.Ecriture.EC_No);
+                }
+            }
+            catch (Exception modificationException)
+            {
+                Logger.Error(
+                    modificationException,
+                    "Échec pendant la mise à jour de la pièce {0}. "
+                    + "Tentative de restauration des écritures déjà modifiées.",
+                    pieceSelectionnee.NumeroPiece);
+
+                RestaurerMisesAJour(misesAJour);
+                throw;
             }
 
             chronometreModification.Stop();
             chronometreTotal.Stop();
 
             Logger.Info(
-                "Mise à jour Sage terminée : facture={0}, " +
-                "trouvées={1}, modifiées={2}, " +
-                "durée recherche={3} ms, " +
-                "durée modification={4} ms, " +
-                "durée totale={5} ms",
-                numeroFacture,
-                nombreEcrituresTrouvees,
+                "Mise à jour Sage terminée : facture OpenBee={0}, "
+                + "référence Sage={1}, TTC={2:F2}, sens={3}, pièce={4}, "
+                + "trouvées={5}, modifiées={6}, "
+                + "durée recherche={7} ms, durée modification={8} ms, "
+                + "durée totale={9} ms",
+                numeroFactureOpenBee,
+                numeroFactureSage,
+                totalTtc,
+                estFacture ? "Facture" : "Avoir",
+                pieceSelectionnee.NumeroPiece,
+                ecrituresPiece.Count,
                 nombreEcrituresModifiees,
                 chronometreRecherche.ElapsedMilliseconds,
                 chronometreModification.ElapsedMilliseconds,
@@ -176,10 +355,10 @@ namespace WorkflowBAP.Sage
 
             return new InvoiceUpdateResult
             {
-                NumeroFacture = numeroFacture,
+                NumeroFacture = numeroFactureOpenBee,
                 BonAPayer = valeurBonAPayer,
                 RaisonRefus = valeurRaisonRefus,
-                NombreEcrituresTrouvees = nombreEcrituresTrouvees,
+                NombreEcrituresTrouvees = ecrituresPiece.Count,
                 NombreEcrituresModifiees = nombreEcrituresModifiees
             };
         }
@@ -215,6 +394,134 @@ namespace WorkflowBAP.Sage
                 "EC_No");
         }
 
+        private static List<EcritureUpdate> PreparerMisesAJour(
+            IEnumerable<IBOEcriture3> ecritures,
+            string valeurBonAPayer,
+            string valeurRaisonRefus)
+        {
+            List<EcritureUpdate> misesAJour =
+                new List<EcritureUpdate>();
+
+            foreach (IBOEcriture3 ecriture in ecritures)
+            {
+                string ancienBonAPayer =
+                    Convert.ToString(
+                        ecriture.InfoLibre[IndexBonAPayer])
+                    ?.Trim() ?? string.Empty;
+
+                string ancienneRaisonRefus =
+                    Convert.ToString(
+                        ecriture.InfoLibre[IndexRaisonRefus])
+                    ?.Trim() ?? string.Empty;
+
+                bool modificationNecessaire =
+                    !string.Equals(
+                        ancienBonAPayer,
+                        valeurBonAPayer,
+                        StringComparison.OrdinalIgnoreCase)
+                    ||
+                    !string.Equals(
+                        ancienneRaisonRefus,
+                        valeurRaisonRefus,
+                        StringComparison.Ordinal);
+
+                misesAJour.Add(
+                    new EcritureUpdate
+                    {
+                        Ecriture = ecriture,
+                        AncienBonAPayer = ancienBonAPayer,
+                        AncienneRaisonRefus = ancienneRaisonRefus,
+                        ModificationNecessaire = modificationNecessaire
+                    });
+            }
+
+            return misesAJour;
+        }
+
+        private static void RestaurerMisesAJour(
+            IList<EcritureUpdate> misesAJour)
+        {
+            for (int index = misesAJour.Count - 1;
+                 index >= 0;
+                 index--)
+            {
+                EcritureUpdate miseAJour =
+                    misesAJour[index];
+
+                if (!miseAJour.EcritureModifiee)
+                    continue;
+
+                try
+                {
+                    miseAJour.Ecriture.InfoLibre[IndexBonAPayer] =
+                        miseAJour.AncienBonAPayer;
+
+                    miseAJour.Ecriture.InfoLibre[IndexRaisonRefus] =
+                        miseAJour.AncienneRaisonRefus;
+
+                    miseAJour.Ecriture.Write();
+
+                    Logger.Warn(
+                        "Écriture restaurée après erreur : EC_No={0}",
+                        miseAJour.Ecriture.EC_No);
+                }
+                catch (Exception restaurationException)
+                {
+                    Logger.Fatal(
+                        restaurationException,
+                        "Impossible de restaurer l'écriture EC_No={0} "
+                        + "après une erreur de mise à jour.",
+                        miseAJour.Ecriture.EC_No);
+                }
+            }
+        }
+
+        private static bool GetEstFacture(
+            string sens)
+        {
+            if (string.Equals(
+                    sens?.Trim(),
+                    "Facture",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (string.Equals(
+                    sens?.Trim(),
+                    "Avoir",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            throw new ArgumentException(
+                "Le sens doit contenir Facture ou Avoir.",
+                nameof(sens));
+        }
+
+        private static string GetJournalNumero(
+            IBOEcriture3 ecriture)
+        {
+            return ecriture.Journal?.JO_Num?.Trim()
+                ?? string.Empty;
+        }
+
+        private static string GetPieceDescription(
+            IBOEcriture3 ecriture)
+        {
+            return string.Format(
+                CultureInfo.GetCultureInfo("fr-FR"),
+                "EC_No={0}, journal={1}, date={2:dd/MM/yyyy}, "
+                + "pièce={3}, montant={4:F2}, sens={5}",
+                ecriture.EC_No,
+                GetJournalNumero(ecriture),
+                ecriture.Date,
+                ecriture.EC_Piece,
+                Math.Abs(ecriture.EC_Montant),
+                ecriture.EC_Sens);
+        }
+
         private static string LimiterTexte(
             string valeur,
             int longueurMax)
@@ -227,6 +534,56 @@ namespace WorkflowBAP.Sage
             return valeur.Length <= longueurMax
                 ? valeur
                 : valeur.Substring(0, longueurMax);
+        }
+
+        private sealed class PieceComptableKey
+        {
+            public string JournalNumero { get; private set; }
+
+            public DateTime Date { get; private set; }
+
+            public string NumeroPiece { get; private set; }
+
+            public static PieceComptableKey FromEcriture(
+                IBOEcriture3 ecriture)
+            {
+                return new PieceComptableKey
+                {
+                    JournalNumero = GetJournalNumero(ecriture),
+                    Date = ecriture.Date,
+                    NumeroPiece = Convert.ToString(
+                        ecriture.EC_Piece)
+                        ?.Trim() ?? string.Empty
+                };
+            }
+
+            public bool Matches(
+                IBOEcriture3 ecriture)
+            {
+                return string.Equals(
+                           JournalNumero,
+                           GetJournalNumero(ecriture),
+                           StringComparison.OrdinalIgnoreCase)
+                       && Date == ecriture.Date
+                       && string.Equals(
+                           NumeroPiece,
+                           Convert.ToString(ecriture.EC_Piece)
+                               ?.Trim() ?? string.Empty,
+                           StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        private sealed class EcritureUpdate
+        {
+            public IBOEcriture3 Ecriture { get; set; }
+
+            public string AncienBonAPayer { get; set; }
+
+            public string AncienneRaisonRefus { get; set; }
+
+            public bool ModificationNecessaire { get; set; }
+
+            public bool EcritureModifiee { get; set; }
         }
     }
 }

@@ -8,6 +8,10 @@
 
         public string NumeroFacture { get; set; }
 
+        public decimal TotalTtc { get; set; }
+
+        public string Sens { get; set; }
+
         public string BonAPayer { get; set; }
 
         public string RaisonRefus { get; set; }
