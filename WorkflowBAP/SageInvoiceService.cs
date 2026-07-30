@@ -161,6 +161,9 @@ namespace WorkflowBAP.Sage
                 if (ecriture.Tiers == null)
                     continue;
 
+                IBOJournal3 journal =
+                    ecriture.Journal;
+
                 double montantSage =
                     Math.Abs(ecriture.EC_Montant);
 
@@ -171,19 +174,27 @@ namespace WorkflowBAP.Sage
                 bool sensCorrespond =
                     ecriture.EC_Sens == sensSageRecherche;
 
+                bool journalAchatCorrespond =
+                    journal != null
+                    && journal.JO_Type
+                    == JournalType.JournalTypeAchat;
+
                 string diagnostic = string.Format(
                     CultureInfo.GetCultureInfo("fr-FR"),
-                    "EC_No={0}, journal={1}, date={2:dd/MM/yyyy}, "
-                    + "pièce={3}, montant={4:F2}, sens={5}, "
-                    + "montant OK={6}, sens OK={7}",
+                    "EC_No={0}, journal={1}, type journal={2}, "
+                    + "date={3:dd/MM/yyyy}, pièce={4}, montant={5:F2}, "
+                    + "sens={6}, montant OK={7}, sens OK={8}, "
+                    + "journal Achats OK={9}",
                     ecriture.EC_No,
                     GetJournalNumero(ecriture),
+                    GetJournalTypeDescription(journal),
                     ecriture.Date,
                     ecriture.EC_Piece,
                     montantSage,
                     ecriture.EC_Sens,
                     montantCorrespond,
-                    sensCorrespond);
+                    sensCorrespond,
+                    journalAchatCorrespond);
 
                 diagnosticsLignesTiers.Add(diagnostic);
 
@@ -191,7 +202,9 @@ namespace WorkflowBAP.Sage
                     "Contrôle ligne tiers Sage : {0}",
                     diagnostic);
 
-                if (montantCorrespond && sensCorrespond)
+                if (montantCorrespond
+                    && sensCorrespond
+                    && journalAchatCorrespond)
                 {
                     lignesTiers.Add(ecriture);
                 }
@@ -209,6 +222,7 @@ namespace WorkflowBAP.Sage
                         CultureInfo.GetCultureInfo("fr-FR"))
                     + ", sens attendu="
                     + (estFacture ? "crédit (Facture)" : "débit (Avoir)")
+                    + ", type de journal attendu=Achats"
                     + ". Lignes tiers contrôlées : "
                     + (diagnosticsLignesTiers.Count == 0
                         ? "aucune"
@@ -237,6 +251,7 @@ namespace WorkflowBAP.Sage
                         CultureInfo.GetCultureInfo("fr-FR"))
                     + " et au sens "
                     + (estFacture ? "Facture" : "Avoir")
+                    + " dans un journal de type Achats"
                     + ". Mise à jour annulée. Correspondances : "
                     + string.Join(" | ", correspondances));
             }
@@ -269,13 +284,16 @@ namespace WorkflowBAP.Sage
             Logger.Info(
                 "Pièce Sage sélectionnée : facture OpenBee={0}, "
                 + "référence Sage={1}, TTC XML={2:F2}, sens XML={3}, "
-                + "journal={4}, date={5:dd/MM/yyyy}, pièce={6}, "
-                + "montant tiers Sage={7:F2}, sens tiers Sage={8}, lignes={9}",
+                + "journal={4}, type journal={5}, date={6:dd/MM/yyyy}, "
+                + "pièce={7}, montant tiers Sage={8:F2}, "
+                + "sens tiers Sage={9}, lignes={10}",
                 numeroFactureOpenBee,
                 numeroFactureSage,
                 totalTtc,
                 estFacture ? "Facture" : "Avoir",
                 pieceSelectionnee.JournalNumero,
+                GetJournalTypeDescription(
+                    ligneTiersSelectionnee.Journal),
                 pieceSelectionnee.Date,
                 pieceSelectionnee.NumeroPiece,
                 Math.Abs(ligneTiersSelectionnee.EC_Montant),
@@ -507,15 +525,24 @@ namespace WorkflowBAP.Sage
                 ?? string.Empty;
         }
 
+        private static string GetJournalTypeDescription(
+            IBOJournal3 journal)
+        {
+            return journal == null
+                ? "aucun"
+                : journal.JO_Type.ToString();
+        }
+
         private static string GetPieceDescription(
             IBOEcriture3 ecriture)
         {
             return string.Format(
                 CultureInfo.GetCultureInfo("fr-FR"),
-                "EC_No={0}, journal={1}, date={2:dd/MM/yyyy}, "
-                + "pièce={3}, montant={4:F2}, sens={5}",
+                "EC_No={0}, journal={1}, type journal={2}, "
+                + "date={3:dd/MM/yyyy}, pièce={4}, montant={5:F2}, sens={6}",
                 ecriture.EC_No,
                 GetJournalNumero(ecriture),
+                GetJournalTypeDescription(ecriture.Journal),
                 ecriture.Date,
                 ecriture.EC_Piece,
                 Math.Abs(ecriture.EC_Montant),

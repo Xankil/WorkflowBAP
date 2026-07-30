@@ -16,7 +16,14 @@ namespace WorkflowBAP
                 InitialiserRepertoireLogs();
                 ConfigurerGestionErreursGlobales();
 
-                Logger.Info("Démarrage WorkflowBAP");
+                Version version =
+                    typeof(Program).Assembly
+                        .GetName()
+                        .Version;
+
+                Logger.Info(
+                    "Démarrage WorkflowBAP V{0}",
+                    version.ToString(2));
 
                 string applicationDirectory =
                     AppDomain.CurrentDomain.BaseDirectory;
@@ -34,7 +41,7 @@ namespace WorkflowBAP
 
                 WorkflowRunResult result =
                     processor.Run();
-                
+
                 Logger.Info(
                     "Fin du traitement : {0} succès, {1} erreur(s), {2} fichier(s) ignoré(s)",
                     result.SuccessCount,
