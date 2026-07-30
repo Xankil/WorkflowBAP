@@ -31,7 +31,6 @@ namespace WorkflowBAP
 
             ProcessWorkingDirectory(result);
             ImportSourceFiles(result);
-            ProcessWorkingDirectory(result);
 
             return result;
         }
@@ -93,7 +92,12 @@ namespace WorkflowBAP
                         continue;
                     }
 
-                    CopyAndRemoveSourceFile(sourceFile);
+                    string localFile =
+                        CopyAndRemoveSourceFile(sourceFile);
+
+                    ProcessOneFile(
+                        localFile,
+                        result);
                 }
                 catch (Exception ex)
                 {
@@ -107,7 +111,7 @@ namespace WorkflowBAP
             }
         }
 
-        private void CopyAndRemoveSourceFile(
+        private string CopyAndRemoveSourceFile(
             string sourceFile)
         {
             string fileName =
@@ -144,6 +148,8 @@ namespace WorkflowBAP
                 Logger.Info(
                     "Fichier récupéré depuis OpenBee : {0}",
                     fileName);
+
+                return localFile;
             }
             catch
             {
@@ -247,19 +253,20 @@ namespace WorkflowBAP
                         _settings.SageUser,
                         _settings.SagePassword);
 
-                    SageInvoiceService service =
-                        new SageInvoiceService(
-                            sage.Application);
-
-                    updateResult =
-                        service.UpdateBonAPayer(
-                            document.DocumentId,
-                            document.NumeroFacture,
-                            document.Fournisseur,
-                            document.TotalTtc,
-                            document.Sens,
-                            estBonAPayer,
-                            document.RaisonRefus);
+                    using (SageInvoiceService service =
+                           new SageInvoiceService(
+                               sage.Application))
+                    {
+                        updateResult =
+                            service.UpdateBonAPayer(
+                                document.DocumentId,
+                                document.NumeroFacture,
+                                document.Fournisseur,
+                                document.TotalTtc,
+                                document.Sens,
+                                estBonAPayer,
+                                document.RaisonRefus);
+                    }
                 }
 
                 if (!updateResult.FactureTrouvee)

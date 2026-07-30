@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -6,7 +7,7 @@ using Objets100cLib;
 
 namespace WorkflowBAP.Sage
 {
-    public sealed class SageInvoiceService
+    public sealed class SageInvoiceService : IDisposable
     {
         private const string NomInfoLibreBonAPayer = "Bon à payer";
         private const string NomInfoLibreRaisonRefus = "Raison refus";
@@ -22,7 +23,12 @@ namespace WorkflowBAP.Sage
         private static readonly NLog.Logger Logger =
             NLog.LogManager.GetCurrentClassLogger();
 
-        private readonly BSCPTAApplication100c _application;
+        private BSCPTAApplication100c _application;
+
+        private readonly ComObjectTracker _comObjects =
+            new ComObjectTracker();
+
+        private bool _disposed;
 
         public SageInvoiceService(BSCPTAApplication100c application)
         {
@@ -45,6 +51,8 @@ namespace WorkflowBAP.Sage
             bool estBonAPayer,
             string raisonRefus)
         {
+            ThrowIfDisposed();
+
             if (string.IsNullOrWhiteSpace(documentId))
             {
                 throw new ArgumentException(
@@ -148,8 +156,16 @@ namespace WorkflowBAP.Sage
             List<IBOEcriture3> ecritures =
                 new List<IBOEcriture3>();
 
-            foreach (IBOEcriture3 ecriture in collection)
+            IEnumerator enumerateur =
+                TrackComObject(
+                    ((IEnumerable)collection).GetEnumerator());
+
+            while (enumerateur.MoveNext())
             {
+                IBOEcriture3 ecriture =
+                    TrackComObject(
+                        (IBOEcriture3)enumerateur.Current);
+
                 string referenceFacture =
                     ecriture.EC_RefPiece?.Trim() ?? string.Empty;
 
@@ -198,14 +214,14 @@ namespace WorkflowBAP.Sage
 
             foreach (IBOEcriture3 ecriture in ecritures)
             {
-                if (ecriture.Tiers == null)
+                IBOTiers3 tiers =
+                    GetTiers(ecriture);
+
+                if (tiers == null)
                     continue;
 
                 IBOJournal3 journal =
-                    ecriture.Journal;
-
-                IBOTiers3 tiers =
-                    ecriture.Tiers;
+                    GetJournal(ecriture);
 
                 string fournisseurSage =
                     tiers.CT_Intitule?.Trim()
@@ -257,7 +273,7 @@ namespace WorkflowBAP.Sage
                     + "journal Achats OK={12}, fournisseur OK={13}, "
                     + "idDMS contrôlé={14}, idDMS OK={15}",
                     ecriture.EC_No,
-                    GetJournalNumero(ecriture),
+                    GetJournalNumero(journal),
                     GetJournalTypeDescription(journal),
                     tiers.CT_Num,
                     fournisseurSage,
@@ -349,7 +365,7 @@ namespace WorkflowBAP.Sage
                 lignesTiers[0];
 
             PieceComptableKey pieceSelectionnee =
-                PieceComptableKey.FromEcriture(
+                CreatePieceComptableKey(
                     ligneTiersSelectionnee);
 
             List<IBOEcriture3> ecrituresPiece =
@@ -357,7 +373,9 @@ namespace WorkflowBAP.Sage
 
             foreach (IBOEcriture3 ecriture in ecritures)
             {
-                if (pieceSelectionnee.Matches(ecriture))
+                if (PieceMatches(
+                        pieceSelectionnee,
+                        ecriture))
                 {
                     ecrituresPiece.Add(ecriture);
                 }
@@ -386,12 +404,14 @@ namespace WorkflowBAP.Sage
                 numeroFactureSage,
                 fournisseurOpenBee,
                 GetFournisseurDescription(
-                    ligneTiersSelectionnee),
+                    GetTiers(
+                        ligneTiersSelectionnee)),
                 totalTtc,
                 estFacture ? "Facture" : "Avoir",
                 pieceSelectionnee.JournalNumero,
                 GetJournalTypeDescription(
-                    ligneTiersSelectionnee.Journal),
+                    GetJournal(
+                        ligneTiersSelectionnee)),
                 pieceSelectionnee.Date,
                 pieceSelectionnee.NumeroPiece,
                 Math.Abs(ligneTiersSelectionnee.EC_Montant),
@@ -421,11 +441,15 @@ namespace WorkflowBAP.Sage
                         continue;
                     }
 
-                    miseAJour.Ecriture.InfoLibre[NomInfoLibreBonAPayer] =
-                        valeurBonAPayer;
+                    SetInformationLibreTexte(
+                        miseAJour.Ecriture,
+                        NomInfoLibreBonAPayer,
+                        valeurBonAPayer);
 
-                    miseAJour.Ecriture.InfoLibre[NomInfoLibreRaisonRefus] =
-                        valeurRaisonRefus;
+                    SetInformationLibreTexte(
+                        miseAJour.Ecriture,
+                        NomInfoLibreRaisonRefus,
+                        valeurRaisonRefus);
 
                     miseAJour.Ecriture.Write();
                     miseAJour.EcritureModifiee = true;
@@ -493,26 +517,38 @@ namespace WorkflowBAP.Sage
                 (IPredicateBuilder)_application;
 
             IPredicateComparison predicate =
-                (IPredicateComparison)predicateBuilder.Create(
-                    ePredicateType.PredicateTypeComparison);
+                TrackComObject(
+                    (IPredicateComparison)predicateBuilder.Create(
+                        ePredicateType.PredicateTypeComparison));
 
             predicate.Key = "EC_RefPiece";
 
             predicate.PredicateTypeComparison =
                 ePredicateTypeComparison.PredicateTypeComparisonEqual;
 
+            /*
+             * Ne pas stocker Values dans une variable typée IBIValues :
+             * en Sage 100 v11, cette propriété renvoie IBIValuesInsertable.
+             * L'appel direct conserve donc exactement le type COM exposé
+             * par la bibliothèque et permet d'utiliser Add.
+             */
             predicate.Values.Add(numeroFacture);
 
             /*
              * EC_No sert uniquement à ordonner les quelques écritures
              * retournées par Sage.
              */
-            return _application.FactoryEcriture.QueryPredicate(
-                predicate,
-                "EC_No");
+            var factoryEcriture =
+                TrackComObject(
+                    _application.FactoryEcriture);
+
+            return TrackComObject(
+                factoryEcriture.QueryPredicate(
+                    predicate,
+                    "EC_No"));
         }
 
-        private static List<EcritureUpdate> PreparerMisesAJour(
+        private List<EcritureUpdate> PreparerMisesAJour(
             IEnumerable<IBOEcriture3> ecritures,
             string valeurBonAPayer,
             string valeurRaisonRefus)
@@ -556,7 +592,7 @@ namespace WorkflowBAP.Sage
             return misesAJour;
         }
 
-        private static void RestaurerMisesAJour(
+        private void RestaurerMisesAJour(
             IList<EcritureUpdate> misesAJour)
         {
             for (int index = misesAJour.Count - 1;
@@ -571,11 +607,15 @@ namespace WorkflowBAP.Sage
 
                 try
                 {
-                    miseAJour.Ecriture.InfoLibre[NomInfoLibreBonAPayer] =
-                        miseAJour.AncienBonAPayer;
+                    SetInformationLibreTexte(
+                        miseAJour.Ecriture,
+                        NomInfoLibreBonAPayer,
+                        miseAJour.AncienBonAPayer);
 
-                    miseAJour.Ecriture.InfoLibre[NomInfoLibreRaisonRefus] =
-                        miseAJour.AncienneRaisonRefus;
+                    SetInformationLibreTexte(
+                        miseAJour.Ecriture,
+                        NomInfoLibreRaisonRefus,
+                        miseAJour.AncienneRaisonRefus);
 
                     miseAJour.Ecriture.Write();
 
@@ -619,9 +659,9 @@ namespace WorkflowBAP.Sage
         }
 
         private static string GetJournalNumero(
-            IBOEcriture3 ecriture)
+            IBOJournal3 journal)
         {
-            return ecriture.Journal?.JO_Num?.Trim()
+            return journal?.JO_Num?.Trim()
                 ?? string.Empty;
         }
 
@@ -634,45 +674,55 @@ namespace WorkflowBAP.Sage
         }
 
         private static string GetFournisseurDescription(
-            IBOEcriture3 ecriture)
+            IBOTiers3 tiers)
         {
-            if (ecriture.Tiers == null)
+            if (tiers == null)
                 return "aucun";
 
             return string.Format(
                 "{0} ({1})",
-                ecriture.Tiers.CT_Intitule?.Trim()
+                tiers.CT_Intitule?.Trim()
                     ?? string.Empty,
-                ecriture.Tiers.CT_Num?.Trim()
+                tiers.CT_Num?.Trim()
                     ?? string.Empty);
         }
 
-        private static string GetPieceDescription(
+        private string GetPieceDescription(
             IBOEcriture3 ecriture)
         {
+            IBOJournal3 journal =
+                GetJournal(ecriture);
+
+            IBOTiers3 tiers =
+                GetTiers(ecriture);
+
             return string.Format(
                 CultureInfo.GetCultureInfo("fr-FR"),
                 "EC_No={0}, journal={1}, type journal={2}, "
                 + "fournisseur={3}, date={4:dd/MM/yyyy}, pièce={5}, "
                 + "montant={6:F2}, sens={7}",
                 ecriture.EC_No,
-                GetJournalNumero(ecriture),
-                GetJournalTypeDescription(ecriture.Journal),
-                GetFournisseurDescription(ecriture),
+                GetJournalNumero(journal),
+                GetJournalTypeDescription(journal),
+                GetFournisseurDescription(tiers),
                 ecriture.Date,
                 ecriture.EC_Piece,
                 Math.Abs(ecriture.EC_Montant),
                 ecriture.EC_Sens);
         }
 
-        private static string GetInformationLibreTexte(
+        private string GetInformationLibreTexte(
             IBOEcriture3 ecriture,
             string nomInformationLibre)
         {
             try
             {
+                IBIValues informationsLibres =
+                    TrackComObject(
+                        ecriture.InfoLibre);
+
                 return Convert.ToString(
-                           ecriture.InfoLibre[nomInformationLibre])
+                           informationsLibres[nomInformationLibre])
                        ?.Trim()
                        ?? string.Empty;
             }
@@ -687,6 +737,88 @@ namespace WorkflowBAP.Sage
                     + "avec exactement ce nom dans la société Sage.",
                     exception);
             }
+        }
+
+        private void SetInformationLibreTexte(
+            IBOEcriture3 ecriture,
+            string nomInformationLibre,
+            string valeur)
+        {
+            IBIValues informationsLibres =
+                TrackComObject(
+                    ecriture.InfoLibre);
+
+            informationsLibres[nomInformationLibre] =
+                valeur;
+        }
+
+        private IBOJournal3 GetJournal(
+            IBOEcriture3 ecriture)
+        {
+            return TrackComObject(
+                ecriture.Journal);
+        }
+
+        private IBOTiers3 GetTiers(
+            IBOEcriture3 ecriture)
+        {
+            return TrackComObject(
+                ecriture.Tiers);
+        }
+
+        private T TrackComObject<T>(
+            T value)
+            where T : class
+        {
+            return _comObjects.Track(value);
+        }
+
+        private PieceComptableKey CreatePieceComptableKey(
+            IBOEcriture3 ecriture)
+        {
+            return new PieceComptableKey(
+                GetJournalNumero(
+                    GetJournal(ecriture)),
+                ecriture.Date,
+                Convert.ToString(
+                    ecriture.EC_Piece)
+                    ?.Trim() ?? string.Empty);
+        }
+
+        private bool PieceMatches(
+            PieceComptableKey piece,
+            IBOEcriture3 ecriture)
+        {
+            return string.Equals(
+                       piece.JournalNumero,
+                       GetJournalNumero(
+                           GetJournal(ecriture)),
+                       StringComparison.OrdinalIgnoreCase)
+                   && piece.Date == ecriture.Date
+                   && string.Equals(
+                       piece.NumeroPiece,
+                       Convert.ToString(ecriture.EC_Piece)
+                           ?.Trim() ?? string.Empty,
+                       StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException(
+                    nameof(SageInvoiceService));
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            _comObjects.Dispose();
+            _application = null;
         }
 
         private static string LimiterTexte(
@@ -705,39 +837,21 @@ namespace WorkflowBAP.Sage
 
         private sealed class PieceComptableKey
         {
-            public string JournalNumero { get; private set; }
-
-            public DateTime Date { get; private set; }
-
-            public string NumeroPiece { get; private set; }
-
-            public static PieceComptableKey FromEcriture(
-                IBOEcriture3 ecriture)
+            public PieceComptableKey(
+                string journalNumero,
+                DateTime date,
+                string numeroPiece)
             {
-                return new PieceComptableKey
-                {
-                    JournalNumero = GetJournalNumero(ecriture),
-                    Date = ecriture.Date,
-                    NumeroPiece = Convert.ToString(
-                        ecriture.EC_Piece)
-                        ?.Trim() ?? string.Empty
-                };
+                JournalNumero = journalNumero;
+                Date = date;
+                NumeroPiece = numeroPiece;
             }
 
-            public bool Matches(
-                IBOEcriture3 ecriture)
-            {
-                return string.Equals(
-                           JournalNumero,
-                           GetJournalNumero(ecriture),
-                           StringComparison.OrdinalIgnoreCase)
-                       && Date == ecriture.Date
-                       && string.Equals(
-                           NumeroPiece,
-                           Convert.ToString(ecriture.EC_Piece)
-                               ?.Trim() ?? string.Empty,
-                           StringComparison.OrdinalIgnoreCase);
-            }
+            public string JournalNumero { get; set; }
+
+            public DateTime Date { get; set; }
+
+            public string NumeroPiece { get; set; }
         }
 
         private sealed class EcritureUpdate

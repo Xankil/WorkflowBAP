@@ -50,6 +50,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="ComObjectTracker.cs" />
     <Compile Include="OpenBeeDocument.cs" />
     <Compile Include="OpenBeeXmlReader.cs" />
     <Compile Include="WorkflowProcessor.cs" />
