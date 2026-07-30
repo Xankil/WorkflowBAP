@@ -211,10 +211,11 @@ namespace WorkflowBAP
 
                 Logger.Info(
                     "XML lu : ID={0}, dossier={1}, facture={2}, "
-                    + "TTC={3:F2}, sens={4}, BAP={5}",
+                    + "fournisseur={3}, TTC={4:F2}, sens={5}, BAP={6}",
                     document.DocumentId,
                     document.Dossier,
                     document.NumeroFacture,
+                    document.Fournisseur,
                     document.TotalTtc,
                     document.Sens,
                     document.BonAPayer);
@@ -252,7 +253,9 @@ namespace WorkflowBAP
 
                     updateResult =
                         service.UpdateBonAPayer(
+                            document.DocumentId,
                             document.NumeroFacture,
+                            document.Fournisseur,
                             document.TotalTtc,
                             document.Sens,
                             estBonAPayer,
@@ -278,11 +281,13 @@ namespace WorkflowBAP
 
                 Logger.Info(
                     "Traitement réussi : fichier={0}, dossier={1}, facture={2}, "
-                    + "TTC={3:F2}, sens={4}, écritures trouvées={5}, "
-                    + "écritures modifiées={6}, destination={7}",
+                    + "fournisseur={3}, TTC={4:F2}, sens={5}, "
+                    + "écritures trouvées={6}, écritures modifiées={7}, "
+                    + "destination={8}",
                     fileName,
                     document.Dossier,
                     document.NumeroFacture,
+                    document.Fournisseur,
                     document.TotalTtc,
                     document.Sens,
                     updateResult.NombreEcrituresTrouvees,
@@ -340,6 +345,9 @@ namespace WorkflowBAP
                     + Environment.NewLine
                     + "Facture : "
                     + (document?.NumeroFacture ?? "inconnue")
+                    + Environment.NewLine
+                    + "Fournisseur : "
+                    + (document?.Fournisseur ?? "inconnu")
                     + Environment.NewLine
                     + "Total TTC : "
                     + (document == null

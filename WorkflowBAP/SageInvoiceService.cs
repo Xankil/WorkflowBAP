@@ -8,12 +8,14 @@ namespace WorkflowBAP.Sage
 {
     public sealed class SageInvoiceService
     {
-        private const int IndexBonAPayer = 3;
-        private const int IndexRaisonRefus = 4;
+        private const string NomInfoLibreBonAPayer = "Bon à payer";
+        private const string NomInfoLibreRaisonRefus = "Raison refus";
+        private const string NomInfoLibreIdDms = "idDMS";
 
         private const int LongueurNumeroFactureSage = 17;
         private const int LongueurBonAPayer = 3;
         private const int LongueurRaisonRefus = 69;
+        private const int LongueurIdDms = 15;
 
         private const double ToleranceMontant = 0.01d;
 
@@ -35,17 +37,46 @@ namespace WorkflowBAP.Sage
         }
 
         public InvoiceUpdateResult UpdateBonAPayer(
+            string documentId,
             string numeroFacture,
+            string fournisseur,
             decimal totalTtc,
             string sens,
             bool estBonAPayer,
             string raisonRefus)
         {
+            if (string.IsNullOrWhiteSpace(documentId))
+            {
+                throw new ArgumentException(
+                    "L'ID OpenBee est obligatoire.",
+                    nameof(documentId));
+            }
+
+            if (documentId.Trim().Length > LongueurIdDms)
+            {
+                throw new ArgumentException(
+                    "L'ID OpenBee dépasse les "
+                    + LongueurIdDms
+                    + " caractères disponibles dans l'information libre Sage "
+                    + "'"
+                    + NomInfoLibreIdDms
+                    + "'. Valeur reçue : "
+                    + documentId.Trim(),
+                    nameof(documentId));
+            }
+
             if (string.IsNullOrWhiteSpace(numeroFacture))
             {
                 throw new ArgumentException(
                     "Le numéro de facture est obligatoire.",
                     nameof(numeroFacture));
+            }
+
+            if (string.IsNullOrWhiteSpace(fournisseur))
+            {
+                throw new ArgumentException(
+                    "Le fournisseur est obligatoire.",
+                    nameof(fournisseur));
             }
 
             if (totalTtc <= 0m)
@@ -57,8 +88,14 @@ namespace WorkflowBAP.Sage
 
             bool estFacture = GetEstFacture(sens);
 
+            string idOpenBee =
+                documentId.Trim();
+
             string numeroFactureOpenBee =
                 numeroFacture.Trim();
+
+            string fournisseurOpenBee =
+                fournisseur.Trim();
 
             string numeroFactureSage = LimiterTexte(
                 numeroFactureOpenBee,
@@ -95,10 +132,13 @@ namespace WorkflowBAP.Sage
             var chronometreRecherche = Stopwatch.StartNew();
 
             Logger.Info(
-                "Recherche Sage ciblée : facture OpenBee={0}, "
-                + "référence Sage={1}, TTC={2:F2}, sens={3}",
+                "Recherche Sage ciblée : ID OpenBee={0}, "
+                + "facture OpenBee={1}, référence Sage={2}, "
+                + "fournisseur OpenBee={3}, TTC={4:F2}, sens={5}",
+                idOpenBee,
                 numeroFactureOpenBee,
                 numeroFactureSage,
+                fournisseurOpenBee,
                 totalTtc,
                 estFacture ? "Facture" : "Avoir");
 
@@ -164,6 +204,13 @@ namespace WorkflowBAP.Sage
                 IBOJournal3 journal =
                     ecriture.Journal;
 
+                IBOTiers3 tiers =
+                    ecriture.Tiers;
+
+                string fournisseurSage =
+                    tiers.CT_Intitule?.Trim()
+                    ?? string.Empty;
+
                 double montantSage =
                     Math.Abs(ecriture.EC_Montant);
 
@@ -179,22 +226,54 @@ namespace WorkflowBAP.Sage
                     && journal.JO_Type
                     == JournalType.JournalTypeAchat;
 
+                bool fournisseurCorrespond =
+                    string.Equals(
+                        fournisseurSage,
+                        fournisseurOpenBee,
+                        StringComparison.Ordinal);
+
+                string idDmsSage =
+                    GetInformationLibreTexte(
+                        ecriture,
+                        NomInfoLibreIdDms);
+
+                bool idDmsRenseigne =
+                    !string.IsNullOrEmpty(idDmsSage);
+
+                bool idDmsCorrespond =
+                    !idDmsRenseigne
+                    || string.Equals(
+                        idDmsSage,
+                        idOpenBee,
+                        StringComparison.Ordinal);
+
                 string diagnostic = string.Format(
                     CultureInfo.GetCultureInfo("fr-FR"),
                     "EC_No={0}, journal={1}, type journal={2}, "
-                    + "date={3:dd/MM/yyyy}, pièce={4}, montant={5:F2}, "
-                    + "sens={6}, montant OK={7}, sens OK={8}, "
-                    + "journal Achats OK={9}",
+                    + "tiers={3}, fournisseur Sage={4}, "
+                    + "idDMS Sage={5}, date={6:dd/MM/yyyy}, "
+                    + "pièce={7}, montant={8:F2}, sens={9}, "
+                    + "montant OK={10}, sens OK={11}, "
+                    + "journal Achats OK={12}, fournisseur OK={13}, "
+                    + "idDMS contrôlé={14}, idDMS OK={15}",
                     ecriture.EC_No,
                     GetJournalNumero(ecriture),
                     GetJournalTypeDescription(journal),
+                    tiers.CT_Num,
+                    fournisseurSage,
+                    string.IsNullOrEmpty(idDmsSage)
+                        ? "<vide>"
+                        : idDmsSage,
                     ecriture.Date,
                     ecriture.EC_Piece,
                     montantSage,
                     ecriture.EC_Sens,
                     montantCorrespond,
                     sensCorrespond,
-                    journalAchatCorrespond);
+                    journalAchatCorrespond,
+                    fournisseurCorrespond,
+                    idDmsRenseigne,
+                    idDmsCorrespond);
 
                 diagnosticsLignesTiers.Add(diagnostic);
 
@@ -204,7 +283,9 @@ namespace WorkflowBAP.Sage
 
                 if (montantCorrespond
                     && sensCorrespond
-                    && journalAchatCorrespond)
+                    && journalAchatCorrespond
+                    && fournisseurCorrespond
+                    && idDmsCorrespond)
                 {
                     lignesTiers.Add(ecriture);
                 }
@@ -223,6 +304,10 @@ namespace WorkflowBAP.Sage
                     + ", sens attendu="
                     + (estFacture ? "crédit (Facture)" : "débit (Avoir)")
                     + ", type de journal attendu=Achats"
+                    + ", fournisseur attendu="
+                    + fournisseurOpenBee
+                    + ", ID OpenBee attendu lorsque idDMS est renseigné="
+                    + idOpenBee
                     + ". Lignes tiers contrôlées : "
                     + (diagnosticsLignesTiers.Count == 0
                         ? "aucune"
@@ -252,6 +337,10 @@ namespace WorkflowBAP.Sage
                     + " et au sens "
                     + (estFacture ? "Facture" : "Avoir")
                     + " dans un journal de type Achats"
+                    + " pour le fournisseur "
+                    + fournisseurOpenBee
+                    + " et l'ID OpenBee "
+                    + idOpenBee
                     + ". Mise à jour annulée. Correspondances : "
                     + string.Join(" | ", correspondances));
             }
@@ -282,13 +371,22 @@ namespace WorkflowBAP.Sage
             }
 
             Logger.Info(
-                "Pièce Sage sélectionnée : facture OpenBee={0}, "
-                + "référence Sage={1}, TTC XML={2:F2}, sens XML={3}, "
-                + "journal={4}, type journal={5}, date={6:dd/MM/yyyy}, "
-                + "pièce={7}, montant tiers Sage={8:F2}, "
-                + "sens tiers Sage={9}, lignes={10}",
+                "Pièce Sage sélectionnée : ID OpenBee={0}, "
+                + "idDMS Sage={1}, facture OpenBee={2}, "
+                + "référence Sage={3}, fournisseur OpenBee={4}, "
+                + "fournisseur Sage={5}, TTC XML={6:F2}, sens XML={7}, "
+                + "journal={8}, type journal={9}, date={10:dd/MM/yyyy}, "
+                + "pièce={11}, montant tiers Sage={12:F2}, "
+                + "sens tiers Sage={13}, lignes={14}",
+                idOpenBee,
+                GetInformationLibreTexte(
+                    ligneTiersSelectionnee,
+                    NomInfoLibreIdDms),
                 numeroFactureOpenBee,
                 numeroFactureSage,
+                fournisseurOpenBee,
+                GetFournisseurDescription(
+                    ligneTiersSelectionnee),
                 totalTtc,
                 estFacture ? "Facture" : "Avoir",
                 pieceSelectionnee.JournalNumero,
@@ -323,10 +421,10 @@ namespace WorkflowBAP.Sage
                         continue;
                     }
 
-                    miseAJour.Ecriture.InfoLibre[IndexBonAPayer] =
+                    miseAJour.Ecriture.InfoLibre[NomInfoLibreBonAPayer] =
                         valeurBonAPayer;
 
-                    miseAJour.Ecriture.InfoLibre[IndexRaisonRefus] =
+                    miseAJour.Ecriture.InfoLibre[NomInfoLibreRaisonRefus] =
                         valeurRaisonRefus;
 
                     miseAJour.Ecriture.Write();
@@ -355,13 +453,15 @@ namespace WorkflowBAP.Sage
             chronometreTotal.Stop();
 
             Logger.Info(
-                "Mise à jour Sage terminée : facture OpenBee={0}, "
-                + "référence Sage={1}, TTC={2:F2}, sens={3}, pièce={4}, "
-                + "trouvées={5}, modifiées={6}, "
-                + "durée recherche={7} ms, durée modification={8} ms, "
-                + "durée totale={9} ms",
+                "Mise à jour Sage terminée : ID OpenBee={0}, "
+                + "facture OpenBee={1}, référence Sage={2}, "
+                + "fournisseur={3}, TTC={4:F2}, sens={5}, pièce={6}, "
+                + "trouvées={7}, modifiées={8}, durée recherche={9} ms, "
+                + "durée modification={10} ms, durée totale={11} ms",
+                idOpenBee,
                 numeroFactureOpenBee,
                 numeroFactureSage,
+                fournisseurOpenBee,
                 totalTtc,
                 estFacture ? "Facture" : "Avoir",
                 pieceSelectionnee.NumeroPiece,
@@ -423,14 +523,14 @@ namespace WorkflowBAP.Sage
             foreach (IBOEcriture3 ecriture in ecritures)
             {
                 string ancienBonAPayer =
-                    Convert.ToString(
-                        ecriture.InfoLibre[IndexBonAPayer])
-                    ?.Trim() ?? string.Empty;
+                    GetInformationLibreTexte(
+                        ecriture,
+                        NomInfoLibreBonAPayer);
 
                 string ancienneRaisonRefus =
-                    Convert.ToString(
-                        ecriture.InfoLibre[IndexRaisonRefus])
-                    ?.Trim() ?? string.Empty;
+                    GetInformationLibreTexte(
+                        ecriture,
+                        NomInfoLibreRaisonRefus);
 
                 bool modificationNecessaire =
                     !string.Equals(
@@ -471,10 +571,10 @@ namespace WorkflowBAP.Sage
 
                 try
                 {
-                    miseAJour.Ecriture.InfoLibre[IndexBonAPayer] =
+                    miseAJour.Ecriture.InfoLibre[NomInfoLibreBonAPayer] =
                         miseAJour.AncienBonAPayer;
 
-                    miseAJour.Ecriture.InfoLibre[IndexRaisonRefus] =
+                    miseAJour.Ecriture.InfoLibre[NomInfoLibreRaisonRefus] =
                         miseAJour.AncienneRaisonRefus;
 
                     miseAJour.Ecriture.Write();
@@ -533,20 +633,60 @@ namespace WorkflowBAP.Sage
                 : journal.JO_Type.ToString();
         }
 
+        private static string GetFournisseurDescription(
+            IBOEcriture3 ecriture)
+        {
+            if (ecriture.Tiers == null)
+                return "aucun";
+
+            return string.Format(
+                "{0} ({1})",
+                ecriture.Tiers.CT_Intitule?.Trim()
+                    ?? string.Empty,
+                ecriture.Tiers.CT_Num?.Trim()
+                    ?? string.Empty);
+        }
+
         private static string GetPieceDescription(
             IBOEcriture3 ecriture)
         {
             return string.Format(
                 CultureInfo.GetCultureInfo("fr-FR"),
                 "EC_No={0}, journal={1}, type journal={2}, "
-                + "date={3:dd/MM/yyyy}, pièce={4}, montant={5:F2}, sens={6}",
+                + "fournisseur={3}, date={4:dd/MM/yyyy}, pièce={5}, "
+                + "montant={6:F2}, sens={7}",
                 ecriture.EC_No,
                 GetJournalNumero(ecriture),
                 GetJournalTypeDescription(ecriture.Journal),
+                GetFournisseurDescription(ecriture),
                 ecriture.Date,
                 ecriture.EC_Piece,
                 Math.Abs(ecriture.EC_Montant),
                 ecriture.EC_Sens);
+        }
+
+        private static string GetInformationLibreTexte(
+            IBOEcriture3 ecriture,
+            string nomInformationLibre)
+        {
+            try
+            {
+                return Convert.ToString(
+                           ecriture.InfoLibre[nomInformationLibre])
+                       ?.Trim()
+                       ?? string.Empty;
+            }
+            catch (Exception exception)
+            {
+                throw new InvalidOperationException(
+                    "Impossible de lire l'information libre Sage '"
+                    + nomInformationLibre
+                    + "' sur l'écriture EC_No="
+                    + ecriture.EC_No
+                    + ". Vérifiez que cette information libre existe "
+                    + "avec exactement ce nom dans la société Sage.",
+                    exception);
+            }
         }
 
         private static string LimiterTexte(

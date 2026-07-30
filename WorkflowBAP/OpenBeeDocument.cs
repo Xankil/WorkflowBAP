@@ -8,6 +8,8 @@
 
         public string NumeroFacture { get; set; }
 
+        public string Fournisseur { get; set; }
+
         public decimal TotalTtc { get; set; }
 
         public string Sens { get; set; }

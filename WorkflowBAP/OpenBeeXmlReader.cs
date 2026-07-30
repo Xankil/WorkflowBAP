@@ -34,6 +34,9 @@ namespace WorkflowBAP
                 NumeroFacture = GetIndexValue(
                     root,
                     "Numéro de facture"),
+                Fournisseur = GetIndexValue(
+                    root,
+                    "Fournisseur"),
                 TotalTtc = ParseTotalTtc(
                     GetIndexValue(root, "Total TTC")),
                 Sens = NormalizeSens(
@@ -154,6 +157,12 @@ namespace WorkflowBAP
 
         private static void Validate(OpenBeeDocument document)
         {
+            if (string.IsNullOrWhiteSpace(document.DocumentId))
+            {
+                throw new InvalidDataException(
+                    "L'ID OpenBee est absent du XML.");
+            }
+
             if (string.IsNullOrWhiteSpace(document.Dossier))
             {
                 throw new InvalidDataException(
@@ -164,6 +173,12 @@ namespace WorkflowBAP
             {
                 throw new InvalidDataException(
                     "Le champ Numéro de facture est absent du XML.");
+            }
+
+            if (string.IsNullOrWhiteSpace(document.Fournisseur))
+            {
+                throw new InvalidDataException(
+                    "Le champ Fournisseur est absent du XML.");
             }
 
             bool estOui = string.Equals(
